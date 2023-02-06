@@ -33,9 +33,10 @@ module "vpc" {
   name = local.name
   cidr = local.vpc_cidr
 
-  azs             = local.azs
-  public_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k)]
-  private_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 10)]
+  azs              = local.azs
+  public_subnets   = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k)]
+  private_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 10)]
+  database_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 4, k + 10)]
 
   enable_nat_gateway   = true
   enable_dns_hostnames = true
@@ -76,6 +77,18 @@ module "eks" {
         nodetype = "manage"
       }
     }
+
+    service = {
+      min_size     = 6
+      max_size     = 12
+      desired_size = 6
+
+      instance_types = ["m5.large"]
+
+      labels = {
+        nodetype = "service"
+      }
+    }
   }
 }
 
@@ -85,9 +98,10 @@ module "efs" {
 
   name = local.name
 
-  mount_targets         = { for k, v in zipmap(local.azs, module.vpc.private_subnets) : k => { subnet_id = v } }
+  mount_targets = { for k, v in zipmap(local.azs, module.vpc.private_subnets) : k => { subnet_id = v } }
+
   security_group_vpc_id = module.vpc.vpc_id
-  security_group_rules = {
+  security_group_rules  = {
     vpc = {
       cidr_blocks = module.vpc.private_subnets_cidr_blocks
     }
@@ -95,3 +109,24 @@ module "efs" {
 }
 
 ## Aurora
+module "aurora-mysql" {
+  source  = "terraform-aws-modules/rds-aurora/aws"
+
+  name = local.name
+  engine = "aurora-mysql"
+
+  instance_class = "db.r5.large"
+  instances = { 
+    one = {}
+    two = {}
+  }
+
+  vpc_id                 = module.vpc.vpc_id
+  create_security_group  = true
+  allowed_cidr_blocks    = module.vpc.private_subnets_cidr_blocks
+  create_db_subnet_group = false
+  db_subnet_group_name   = module.vpc.database_subnet_group_name
+
+  create_random_password = false
+  master_password = "adminadmin"
+}
