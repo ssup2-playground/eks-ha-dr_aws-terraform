@@ -207,6 +207,30 @@ resource "kubernetes_service_account" "eks_load_balancer_controller_service_acco
   }
 }
 
+resource "helm_release" "aws-load-balancer-controller" {
+  namespace  = "kube-system"
+  name       = "aws-load-balancer-controller"
+  chart      = "aws-load-balancer-controller"
+  repository = "https://aws.github.io/eks-charts"
+ 
+  set {
+    name  = "clusterName"
+    value = module.eks.cluster_name
+  }
+  set {
+    name  = "serviceAccount.create"
+    value = false
+  } 
+  set {
+    name  = "serviceAccount.name"
+    value = "aws-load-balancer-controller"
+  }
+  set {
+    name  = "nodeSelector.type"
+    value = "control"
+  }
+}
+
 ## EKS / External DNS
 module "eks_external_dns_irsa_role" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
@@ -233,6 +257,30 @@ resource "kubernetes_service_account" "eks_external_dns_service_account" {
   }
 }
 
+resource "helm_release" "external_dns" {
+  namespace  = "kube-system"
+  name       = "external-dns"
+  chart      = "external-dns"
+  repository = "https://charts.bitnami.com/bitnami"
+ 
+  set {
+    name  = "serviceAccount.create"
+    value = false
+  } 
+  set {
+    name  = "serviceAccount.name"
+    value = "external-dns"
+  }
+  set {
+    name  = "nodeSelector.type"
+    value = "control"
+  }
+  set {
+    name  = "replicaCount"
+    value = 2
+  } 
+}
+
 ## EKS / EFS CSI
 module "eks_efs_csi_irsa_role" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
@@ -256,6 +304,26 @@ resource "kubernetes_service_account" "eks_efs_csi_service_account" {
     annotations = {
       "eks.amazonaws.com/role-arn" = module.eks_efs_csi_irsa_role.iam_role_arn
     }
+  }
+}
+
+resource "helm_release" "aws_efs_csi_driver" {
+  namespace  = "kube-system"
+  name       = "aws-efs-csi-driver"
+  chart      = "aws-efs-csi-driver"
+  repository = "https://kubernetes-sigs.github.io/aws-efs-csi-driver/"
+ 
+  set {
+    name  = "controller.serviceAccount.create"
+    value = false
+  } 
+  set {
+    name  = "controller.serviceAccount.name"
+    value = "efs-csi-controller-sa"
+  }
+  set {
+    name  = "controller.nodeSelector.type"
+    value = "control"
   }
 }
 
