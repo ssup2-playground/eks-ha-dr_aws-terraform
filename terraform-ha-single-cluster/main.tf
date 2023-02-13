@@ -14,10 +14,27 @@ provider "kubernetes" {
   }
 }
 
+provider "helm" {
+  # https://github.com/hashicorp/terraform-provider-helm/issues/630#issuecomment-996682323
+  repository_config_path = "${path.module}/.helm/repositories.yaml" 
+  repository_cache       = "${path.module}/.helm"
+
+  kubernetes {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+    }
+  }
+}
+
 ## Data
 data "aws_availability_zones" "available" {}
 
-## Locals
+## Local Vars
 locals {
   name   = "eks-ha-single-cluster"
   region = "us-east-2"
@@ -105,15 +122,18 @@ module "eks" {
   subnet_ids = module.vpc.private_subnets
 
   eks_managed_node_groups = {
-    manage = {
+    control = {
       min_size     = 2
       max_size     = 2
       desired_size = 2
 
-      instance_types = ["m5.large"]
+      instance_types = ["t3.large"]
+      iam_role_additional_policies = {
+        AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      }
 
       labels = {
-        nodetype = "manage"
+        type = "control"
       }
     }
 
@@ -122,10 +142,13 @@ module "eks" {
       max_size     = 12
       desired_size = 6
 
-      instance_types = ["m5.large"]
+      instance_types = ["t3.large"]
+      iam_role_additional_policies = {
+        AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      }
 
       labels = {
-        nodetype = "service"
+        type = "service"
       }
     }
   }
@@ -233,5 +256,22 @@ resource "kubernetes_service_account" "eks_efs_csi_service_account" {
     annotations = {
       "eks.amazonaws.com/role-arn" = module.eks_efs_csi_irsa_role.iam_role_arn
     }
+  }
+}
+
+## EKS / Metric Server
+resource "helm_release" "metrics_server" {
+  namespace  = "kube-system"
+  name       = "metrics-server"
+  chart      = "metrics-server"
+  repository = "https://kubernetes-sigs.github.io/metrics-server/"
+ 
+  set {
+    name  = "replicas"
+    value = 2
+  } 
+  set {
+    name  = "nodeSelector.type"
+    value = "control"
   }
 }
