@@ -55,6 +55,45 @@ module "vpc" {
   }
 }
 
+## EFS
+module "efs" {
+  source = "terraform-aws-modules/efs/aws"
+
+  name = local.name
+
+  mount_targets = { for k, v in zipmap(local.azs, module.vpc.private_subnets) : k => { subnet_id = v } }
+
+  security_group_vpc_id = module.vpc.vpc_id
+  security_group_rules  = {
+    vpc = {
+      cidr_blocks = module.vpc.private_subnets_cidr_blocks
+    }
+  }
+}
+
+## Aurora
+module "aurora_mysql" {
+  source  = "terraform-aws-modules/rds-aurora/aws"
+
+  name = local.name
+  engine = "aurora-mysql"
+
+  instance_class = "db.r5.large"
+  instances = { 
+    one = {}
+    two = {}
+  }
+
+  vpc_id                 = module.vpc.vpc_id
+  create_security_group  = true
+  allowed_cidr_blocks    = module.vpc.private_subnets_cidr_blocks
+  create_db_subnet_group = false
+  db_subnet_group_name   = module.vpc.database_subnet_group_name
+
+  create_random_password = false
+  master_password = "adminadmin"
+}
+
 ## EKS
 module "eks" {
   source = "terraform-aws-modules/eks/aws"
@@ -92,41 +131,107 @@ module "eks" {
   }
 }
 
-## EFS
-module "efs" {
-  source = "terraform-aws-modules/efs/aws"
+## EKS / Cluster Autoscaler
+module "eks_cluster_autoscaler_irsa_role" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
-  name = local.name
+  role_name                        = format("%s-%s", "cluster-autoscaler", local.name)
+  attach_cluster_autoscaler_policy = true
+  cluster_autoscaler_cluster_ids   = [module.eks.cluster_name]
 
-  mount_targets = { for k, v in zipmap(local.azs, module.vpc.private_subnets) : k => { subnet_id = v } }
-
-  security_group_vpc_id = module.vpc.vpc_id
-  security_group_rules  = {
-    vpc = {
-      cidr_blocks = module.vpc.private_subnets_cidr_blocks
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:cluster-autoscaler"]
     }
   }
 }
 
-## Aurora
-module "aurora-mysql" {
-  source  = "terraform-aws-modules/rds-aurora/aws"
+resource "kubernetes_service_account" "eks_cluster_autoscaler_service_account" {
+  metadata {
+    namespace = "kube-system"
+    name      = "cluster-autoscaler"
 
-  name = local.name
-  engine = "aurora-mysql"
-
-  instance_class = "db.r5.large"
-  instances = { 
-    one = {}
-    two = {}
+    annotations = {
+      "eks.amazonaws.com/role-arn" = module.eks_cluster_autoscaler_irsa_role.iam_role_arn
+    }
   }
+}
 
-  vpc_id                 = module.vpc.vpc_id
-  create_security_group  = true
-  allowed_cidr_blocks    = module.vpc.private_subnets_cidr_blocks
-  create_db_subnet_group = false
-  db_subnet_group_name   = module.vpc.database_subnet_group_name
+## EKS / Load Balancer Controller
+module "eks_load_balancer_controller_irsa_role" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
-  create_random_password = false
-  master_password = "adminadmin"
+  role_name                              = format("%s-%s", "eks-aws-load-balancer-controller", local.name)
+  attach_load_balancer_controller_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
+    }
+  }
+}
+
+resource "kubernetes_service_account" "eks_load_balancer_controller_service_account" {
+  metadata {
+    namespace = "kube-system"
+    name      = "aws-load-balancer-controller"
+
+    annotations = {
+      "eks.amazonaws.com/role-arn" = module.eks_load_balancer_controller_irsa_role.iam_role_arn
+    }
+  }
+}
+
+## EKS / External DNS
+module "eks_external_dns_irsa_role" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name                  = format("%s-%s", "eks-external-dns", local.name)
+  attach_external_dns_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:external-dns"]
+    }
+  }
+}
+
+resource "kubernetes_service_account" "eks_external_dns_service_account" {
+  metadata {
+    namespace = "kube-system"
+    name      = "external-dns"
+
+    annotations = {
+      "eks.amazonaws.com/role-arn" = module.eks_external_dns_irsa_role.iam_role_arn
+    }
+  }
+}
+
+## EKS / EFS CSI
+module "eks_efs_csi_irsa_role" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name             = format("%s-%s", "efs-csi", local.name)
+  attach_efs_csi_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:efs-csi-controller-sa"]
+    }
+  }
+}
+
+resource "kubernetes_service_account" "eks_efs_csi_service_account" {
+  metadata {
+    namespace = "kube-system"
+    name      = "efs-csi-controller-sa"
+
+    annotations = {
+      "eks.amazonaws.com/role-arn" = module.eks_efs_csi_irsa_role.iam_role_arn
+    }
+  }
 }
