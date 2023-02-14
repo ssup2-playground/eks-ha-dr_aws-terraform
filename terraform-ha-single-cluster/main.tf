@@ -142,7 +142,7 @@ module "eks" {
       max_size     = 2
       desired_size = 2
 
-      instance_types = ["t3.large"]
+      instance_types = ["m5.large"]
       iam_role_additional_policies = {
         AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
       }
@@ -157,7 +157,7 @@ module "eks" {
       max_size     = 12
       desired_size = 6
 
-      instance_types = ["t3.large"]
+      instance_types = ["m5.large"]
       iam_role_additional_policies = {
         AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
       }
@@ -367,9 +367,41 @@ resource "helm_release" "metrics_server" {
   }
 }
 
-## Cloud9
-resource "aws_cloud9_environment_ec2" "example" {
-  name          = local.name
-  instance_type = "t2.micro"
-  subnet_id     = module.vpc.public_subnets[0]
+## Desktop Instance
+resource "aws_security_group" "rdp_sg" {
+  name   = format("%s-rdp", local.name)
+  vpc_id = module.vpc.vpc_id
+
+  ingress {
+    from_port        = 3389
+    to_port          = 3389
+    protocol         = "tcp"
+    cidr_blocks      = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port        = 22
+    to_port          = 22
+    protocol         = "tcp"
+    cidr_blocks      = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+  }
 }
+
+module "ec2_instance" {
+  source  = "terraform-aws-modules/ec2-instance/aws"
+
+  name = format("%s-mate", local.name)
+
+  ami                    = "ami-08778753ef37aa408"
+  instance_type          = "m5.large"
+  subnet_id              = module.vpc.public_subnets[0]
+  vpc_security_group_ids = [aws_security_group.rdp_sg.id]
+}
+
