@@ -37,10 +37,25 @@ data "aws_availability_zones" "available" {}
 ## Local Vars
 locals {
   name   = "eks-ha-single-cluster"
-  region = "us-east-2"
 
+  region = "us-east-2"
   vpc_cidr = "10.0.0.0/16"
   azs      = slice(data.aws_availability_zones.available.names, 0, 3)
+}
+
+## Zones
+module "zones" {
+  source = "terraform-aws-modules/route53/aws//modules/zones"
+
+  zones = {
+    format("%s.test", local.name) = {
+      vpc = [
+        {
+          vpc_id = module.vpc.vpc_id
+        },
+      ]
+    }
+  }
 }
 
 ## VPC
@@ -264,6 +279,10 @@ resource "helm_release" "external_dns" {
   repository = "https://charts.bitnami.com/bitnami"
  
   set {
+    name = "provider"
+    value = "aws"
+  }
+  set {
     name  = "serviceAccount.create"
     value = false
   } 
@@ -277,8 +296,12 @@ resource "helm_release" "external_dns" {
   }
   set {
     name  = "replicaCount"
-    value = 2
+    value = 1
   } 
+  set {
+    name  = "domainFilters[0]"
+    value = format("%s.test", local.name) 
+  }
 }
 
 ## EKS / EFS CSI
@@ -342,4 +365,11 @@ resource "helm_release" "metrics_server" {
     name  = "nodeSelector.type"
     value = "control"
   }
+}
+
+## Cloud9
+resource "aws_cloud9_environment_ec2" "example" {
+  name          = local.name
+  instance_type = "t2.micro"
+  subnet_id     = module.vpc.public_subnets[0]
 }
