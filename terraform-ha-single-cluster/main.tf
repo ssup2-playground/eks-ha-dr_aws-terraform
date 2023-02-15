@@ -15,7 +15,7 @@ provider "kubernetes" {
 }
 
 provider "helm" {
-  # https://github.com/hashicorp/terraform-provider-helm/issues/630#issuecomment-996682323
+  # to avoid issue : https://github.com/hashicorp/terraform-provider-helm/issues/630#issuecomment-996682323
   repository_config_path = "${path.module}/.helm/repositories.yaml" 
   repository_cache       = "${path.module}/.helm"
 
@@ -26,8 +26,21 @@ provider "helm" {
     exec {
       api_version = "client.authentication.k8s.io/v1beta1"
       command     = "aws"
-      args = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
     }
+  }
+}
+
+provider "kubectl" {
+  apply_retry_count      = 5
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+  load_config_file       = false
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
   }
 }
 
@@ -79,11 +92,12 @@ module "vpc" {
   manage_default_security_group = true
 
   public_subnet_tags = {
-    "kubernetes.io/role/elb" = 1
+    "kubernetes.io/role/elb" = 1                   # for AWS Load Balancer Controller
   }
 
   private_subnet_tags = {
-    "kubernetes.io/role/internal-elb" = 1
+    "kubernetes.io/role/internal-elb" = 1          # for AWS Load Balancer Controller
+    "karpenter.sh/discovery"          = local.name # for Karpenter
   }
 }
 
@@ -151,49 +165,121 @@ module "eks" {
         type = "control"
       }
     }
+  }
 
-    service = {
-      min_size     = 6
-      max_size     = 12
-      desired_size = 6
-
-      instance_types = ["m5.large"]
-      iam_role_additional_policies = {
-        AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-      }
-
-      labels = {
-        type = "service"
-      }
-    }
+  ## for Karpenter
+  manage_aws_auth_configmap = true
+  aws_auth_roles = [
+    {
+      rolearn  = module.karpenter.role_arn
+      username = "system:node:{{EC2PrivateDNSName}}"
+      groups = [
+        "system:bootstrappers",
+        "system:nodes",
+      ]
+    },
+  ]
+  node_security_group_tags = {
+    "karpenter.sh/discovery" = local.name
   }
 }
 
-## EKS / Cluster Autoscaler
-module "eks_cluster_autoscaler_irsa_role" {
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+## EKS / Karpenter
+module "karpenter" {
+  source = "terraform-aws-modules/eks/aws//modules/karpenter"
 
-  role_name                        = format("%s-%s", "cluster-autoscaler", local.name)
-  attach_cluster_autoscaler_policy = true
-  cluster_autoscaler_cluster_ids   = [module.eks.cluster_name]
+  cluster_name           = module.eks.cluster_name
+  irsa_oidc_provider_arn = module.eks.oidc_provider_arn
 
-  oidc_providers = {
-    main = {
-      provider_arn               = module.eks.oidc_provider_arn
-      namespace_service_accounts = ["kube-system:cluster-autoscaler"]
-    }
+  iam_role_additional_policies = ["arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"]
+}
+
+resource "helm_release" "karpenter" {
+  namespace  = "karpenter"
+  create_namespace = true
+
+  name       = "karpenter"
+  chart      = "karpenter"
+  repository = "oci://public.ecr.aws/karpenter"
+  version    = "v0.24.0"
+
+  set {
+    name  = "settings.aws.clusterName"
+    value = module.eks.cluster_name
+  }
+  set {
+    name  = "settings.aws.clusterEndpoint"
+    value = module.eks.cluster_endpoint
+  }
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = module.karpenter.irsa_arn
+  }
+  set {
+    name  = "settings.aws.defaultInstanceProfile"
+    value = module.karpenter.instance_profile_name
+  }
+  set {
+    name  = "settings.aws.interruptionQueueName"
+    value = module.karpenter.queue_name
+  }
+  set {
+    name  = "nodeSelector.type"
+    value = "control"
   }
 }
 
-resource "kubernetes_service_account" "eks_cluster_autoscaler_service_account" {
-  metadata {
-    namespace = "kube-system"
-    name      = "cluster-autoscaler"
+resource "kubectl_manifest" "karpenter_provisioner" {
+  yaml_body = <<-YAML
+    apiVersion: karpenter.sh/v1alpha5
+    kind: Provisioner
+    metadata:
+      name: default
+    spec:
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values: ["m5"]
+        - key: karpenter.k8s.aws/instance-size
+          operator: In
+          values: ["large"]
+      labels:
+        type: service
+      limits:
+        resources:
+          cpu: 1000
+          memory: 1000Gi
+      providerRef:
+        name: default
+      ttlSecondsAfterEmpty: 30
+  YAML
 
-    annotations = {
-      "eks.amazonaws.com/role-arn" = module.eks_cluster_autoscaler_irsa_role.iam_role_arn
-    }
-  }
+  depends_on = [
+    helm_release.karpenter
+  ]
+}
+
+resource "kubectl_manifest" "karpenter_node_template" {
+  yaml_body = <<-YAML
+    apiVersion: karpenter.k8s.aws/v1alpha1
+    kind: AWSNodeTemplate
+    metadata:
+      name: default
+    spec:
+      subnetSelector:
+        karpenter.sh/discovery: ${module.eks.cluster_name}
+      securityGroupSelector:
+        karpenter.sh/discovery: ${module.eks.cluster_name}
+      tags:
+        karpenter.sh/discovery: ${module.eks.cluster_name}
+  YAML
+
+  depends_on = [
+    helm_release.karpenter
+  ]
 }
 
 ## EKS / Load Balancer Controller
@@ -350,23 +436,6 @@ resource "helm_release" "aws_efs_csi_driver" {
   }
 }
 
-## EKS / Metric Server
-resource "helm_release" "metrics_server" {
-  namespace  = "kube-system"
-  name       = "metrics-server"
-  chart      = "metrics-server"
-  repository = "https://kubernetes-sigs.github.io/metrics-server/"
- 
-  set {
-    name  = "replicas"
-    value = 2
-  } 
-  set {
-    name  = "nodeSelector.type"
-    value = "control"
-  }
-}
-
 ## Desktop Instance
 resource "aws_security_group" "rdp_sg" {
   name   = format("%s-rdp", local.name)
@@ -375,13 +444,6 @@ resource "aws_security_group" "rdp_sg" {
   ingress {
     from_port        = 3389
     to_port          = 3389
-    protocol         = "tcp"
-    cidr_blocks      = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port        = 22
-    to_port          = 22
     protocol         = "tcp"
     cidr_blocks      = ["0.0.0.0/0"]
   }
