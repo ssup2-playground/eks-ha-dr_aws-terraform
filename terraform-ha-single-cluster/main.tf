@@ -109,6 +109,7 @@ module "efs" {
 
   mount_targets = { for k, v in zipmap(local.azs, module.vpc.private_subnets) : k => { subnet_id = v } }
 
+  attach_policy         = false
   security_group_vpc_id = module.vpc.vpc_id
   security_group_rules  = {
     vpc = {
@@ -137,6 +138,7 @@ module "aurora_mysql" {
   db_subnet_group_name   = module.vpc.database_subnet_group_name
 
   create_random_password = false
+  master_username = "admin"
   master_password = "adminadmin"
 }
 
@@ -446,6 +448,64 @@ resource "helm_release" "aws_efs_csi_driver" {
     name  = "controller.nodeSelector.type"
     value = "control"
   }
+}
+
+resource "kubectl_manifest" "efs-pv" {
+  yaml_body = <<-YAML
+    apiVersion: v1
+    kind: PersistentVolume
+    metadata:
+      name: efs-pv
+    spec:
+      capacity:
+        storage: 5Gi
+      volumeMode: Filesystem
+      accessModes:
+        - ReadWriteMany
+      persistentVolumeReclaimPolicy: Retain
+      storageClassName: efs-sc
+      csi:
+        driver: efs.csi.aws.com
+        volumeHandle: ${module.efs.id}
+  YAML
+
+  depends_on = [
+    helm_release.aws_efs_csi_driver
+  ]
+}
+
+resource "kubectl_manifest" "efs-pvc" {
+  yaml_body = <<-YAML
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: efs-pvc
+    spec:
+      accessModes:
+        - ReadWriteMany
+      storageClassName: efs-sc
+      resources:
+        requests:
+          storage: 5Gi
+  YAML
+
+  depends_on = [
+    helm_release.aws_efs_csi_driver
+  ]
+}
+
+resource "kubectl_manifest" "efs-sc" {
+  yaml_body = <<-YAML
+    apiVersion: storage.k8s.io/v1
+    kind: StorageClass
+    metadata:
+      name: efs-sc
+    provisioner: efs.csi.aws.com
+  YAML
+
+  depends_on = [
+    helm_release.aws_efs_csi_driver
+  ]
 }
 
 ## Desktop Instance
