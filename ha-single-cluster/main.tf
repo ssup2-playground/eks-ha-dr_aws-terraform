@@ -49,9 +49,9 @@ data "aws_availability_zones" "available" {}
 
 ## Local Vars
 locals {
-  name   = "eks-ha-single-cluster"
+  name = "eks-ha-dr-hasingle"
 
-  region = "us-east-2"
+  region   = "us-west-2"
   vpc_cidr = "10.0.0.0/16"
   azs      = slice(data.aws_availability_zones.available.names, 0, 3)
 }
@@ -75,9 +75,9 @@ module "zones" {
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
 
-  name = local.name
-  cidr = local.vpc_cidr
+  name = format("%s-vpc", local.name)
 
+  cidr             = local.vpc_cidr
   azs              = local.azs
   public_subnets   = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k)]
   private_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 10)]
@@ -92,12 +92,12 @@ module "vpc" {
   manage_default_security_group = true
 
   public_subnet_tags = {
-    "kubernetes.io/role/elb" = 1                   # for AWS Load Balancer Controller
+    "kubernetes.io/role/elb" = 1 # for AWS Load Balancer Controller
   }
 
   private_subnet_tags = {
-    "kubernetes.io/role/internal-elb" = 1          # for AWS Load Balancer Controller
-    "karpenter.sh/discovery"          = local.name # for Karpenter
+    "kubernetes.io/role/internal-elb" = 1                            # for AWS Load Balancer Controller
+    "karpenter.sh/discovery"          = format("%s-eks", local.name) # for Karpenter
   }
 }
 
@@ -105,7 +105,7 @@ module "vpc" {
 module "efs" {
   source = "terraform-aws-modules/efs/aws"
 
-  name = local.name
+  name = format("%s-efs", local.name)
 
   mount_targets = { for k, v in zipmap(local.azs, module.vpc.private_subnets) : k => { subnet_id = v } }
 
@@ -120,9 +120,10 @@ module "efs" {
 
 ## Aurora
 module "aurora_mysql" {
-  source  = "terraform-aws-modules/rds-aurora/aws"
+  source = "terraform-aws-modules/rds-aurora/aws"
 
-  name = local.name
+  name = format("%s-aurora", local.name)
+
   engine = "aurora-mysql"
 
   instance_class = "db.r5.large"
@@ -138,19 +139,19 @@ module "aurora_mysql" {
   db_subnet_group_name   = module.vpc.database_subnet_group_name
 
   create_random_password = false
-  master_username = "admin"
-  master_password = "adminadmin"
+  master_username        = "admin"
+  master_password        = "adminadmin"
 }
 
 ## EKS
 module "eks" {
   source = "terraform-aws-modules/eks/aws"
 
-  cluster_name                   = local.name
-  cluster_endpoint_public_access = true
+  cluster_name = format("%s-eks", local.name)
 
-  vpc_id     = module.vpc.vpc_id
-  subnet_ids = module.vpc.private_subnets
+  vpc_id                         = module.vpc.vpc_id
+  subnet_ids                     = module.vpc.private_subnets
+  cluster_endpoint_public_access = true
 
   eks_managed_node_groups = {
     control = {
@@ -171,7 +172,7 @@ module "eks" {
 
   ## Node Security Group
   node_security_group_tags = {
-    "karpenter.sh/discovery" = local.name ## for Karpenter
+    "karpenter.sh/discovery" = format("%s-eks", local.name) # for Karpenter
   }
   node_security_group_additional_rules = {
     ingress_self_all = {
@@ -202,9 +203,9 @@ module "eks" {
 module "karpenter" {
   source = "terraform-aws-modules/eks/aws//modules/karpenter"
 
-  cluster_name           = module.eks.cluster_name
-  irsa_oidc_provider_arn = module.eks.oidc_provider_arn
+  cluster_name = module.eks.cluster_name
 
+  irsa_oidc_provider_arn       = module.eks.oidc_provider_arn
   iam_role_additional_policies = ["arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"]
 }
 
@@ -300,7 +301,7 @@ resource "kubectl_manifest" "karpenter_node_template" {
 module "eks_load_balancer_controller_irsa_role" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
-  role_name                              = format("%s-%s", "eks-aws-load-balancer-controller", local.name)
+  role_name                              = format("eks-aws-load-balancer-controller-%s", local.name)
   attach_load_balancer_controller_policy = true
 
   oidc_providers = {
@@ -339,7 +340,7 @@ resource "helm_release" "aws-load-balancer-controller" {
 module "eks_external_dns_irsa_role" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
-  role_name                  = format("%s-%s", "eks-external-dns", local.name)
+  role_name                  = format("eks-external-dns-%s", local.name)
   attach_external_dns_policy = true
 
   oidc_providers = {
@@ -386,7 +387,7 @@ resource "helm_release" "external_dns" {
 module "eks_efs_csi_irsa_role" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
-  role_name             = format("%s-%s", "efs-csi", local.name)
+  role_name             = format("eks-efs-csi-%s", local.name)
   attach_efs_csi_policy = true
 
   oidc_providers = {
@@ -473,36 +474,5 @@ resource "kubectl_manifest" "efs-sc" {
   depends_on = [
     helm_release.aws_efs_csi_driver
   ]
-}
-
-## Desktop Instance
-resource "aws_security_group" "rdp_sg" {
-  name   = format("%s-rdp", local.name)
-  vpc_id = module.vpc.vpc_id
-
-  ingress {
-    from_port        = 3389
-    to_port          = 3389
-    protocol         = "tcp"
-    cidr_blocks      = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port        = 0
-    to_port          = 0
-    protocol         = "-1"
-    cidr_blocks      = ["0.0.0.0/0"]
-  }
-}
-
-module "ec2_instance" {
-  source  = "terraform-aws-modules/ec2-instance/aws"
-
-  name = format("%s-mate", local.name)
-
-  ami                    = "ami-08778753ef37aa408"
-  instance_type          = "m5.large"
-  subnet_id              = module.vpc.public_subnets[0]
-  vpc_security_group_ids = [aws_security_group.rdp_sg.id]
 }
 
