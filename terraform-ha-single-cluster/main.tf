@@ -311,17 +311,6 @@ module "eks_load_balancer_controller_irsa_role" {
   }
 }
 
-resource "kubernetes_service_account" "eks_load_balancer_controller_service_account" {
-  metadata {
-    namespace = "kube-system"
-    name      = "aws-load-balancer-controller"
-
-    annotations = {
-      "eks.amazonaws.com/role-arn" = module.eks_load_balancer_controller_irsa_role.iam_role_arn
-    }
-  }
-}
-
 resource "helm_release" "aws-load-balancer-controller" {
   namespace  = "kube-system"
   name       = "aws-load-balancer-controller"
@@ -333,12 +322,12 @@ resource "helm_release" "aws-load-balancer-controller" {
     value = module.eks.cluster_name
   }
   set {
-    name  = "serviceAccount.create"
-    value = false
-  } 
-  set {
     name  = "serviceAccount.name"
     value = "aws-load-balancer-controller"
+  }
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = module.eks_load_balancer_controller_irsa_role.iam_role_arn
   }
   set {
     name  = "nodeSelector.type"
@@ -361,17 +350,6 @@ module "eks_external_dns_irsa_role" {
   }
 }
 
-resource "kubernetes_service_account" "eks_external_dns_service_account" {
-  metadata {
-    namespace = "kube-system"
-    name      = "external-dns"
-
-    annotations = {
-      "eks.amazonaws.com/role-arn" = module.eks_external_dns_irsa_role.iam_role_arn
-    }
-  }
-}
-
 resource "helm_release" "external_dns" {
   namespace  = "kube-system"
   name       = "external-dns"
@@ -379,16 +357,16 @@ resource "helm_release" "external_dns" {
   repository = "https://charts.bitnami.com/bitnami"
  
   set {
-    name = "provider"
+    name  = "provider"
     value = "aws"
   }
   set {
-    name  = "serviceAccount.create"
-    value = false
-  } 
-  set {
     name  = "serviceAccount.name"
     value = "external-dns"
+  }
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = module.eks_external_dns_irsa_role.iam_role_arn
   }
   set {
     name  = "nodeSelector.type"
@@ -419,17 +397,6 @@ module "eks_efs_csi_irsa_role" {
   }
 }
 
-resource "kubernetes_service_account" "eks_efs_csi_service_account" {
-  metadata {
-    namespace = "kube-system"
-    name      = "efs-csi-controller-sa"
-
-    annotations = {
-      "eks.amazonaws.com/role-arn" = module.eks_efs_csi_irsa_role.iam_role_arn
-    }
-  }
-}
-
 resource "helm_release" "aws_efs_csi_driver" {
   namespace  = "kube-system"
   name       = "aws-efs-csi-driver"
@@ -437,12 +404,12 @@ resource "helm_release" "aws_efs_csi_driver" {
   repository = "https://kubernetes-sigs.github.io/aws-efs-csi-driver/"
  
   set {
-    name  = "controller.serviceAccount.create"
-    value = false
-  } 
-  set {
     name  = "controller.serviceAccount.name"
     value = "efs-csi-controller-sa"
+  }
+  set {
+    name  = "controller.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = module.eks_efs_csi_irsa_role.iam_role_arn
   }
   set {
     name  = "controller.nodeSelector.type"
