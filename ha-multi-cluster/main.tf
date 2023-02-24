@@ -4,13 +4,13 @@ provider "aws" {
 }
 
 provider "kubernetes" {
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+  host                   = module.eks-first.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks-first.cluster_certificate_authority_data)
 
   exec {
     api_version = "client.authentication.k8s.io/v1beta1"
     command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+    args        = ["eks", "get-token", "--cluster-name", module.eks-first.cluster_name]
   }
 }
 
@@ -20,27 +20,27 @@ provider "helm" {
   repository_cache       = "${path.module}/.helm"
 
   kubernetes {
-    host                   = module.eks.cluster_endpoint
-    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+    host                   = module.eks-first.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks-first.cluster_certificate_authority_data)
 
     exec {
       api_version = "client.authentication.k8s.io/v1beta1"
       command     = "aws"
-      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+      args        = ["eks", "get-token", "--cluster-name", module.eks-first.cluster_name]
     }
   }
 }
 
 provider "kubectl" {
   apply_retry_count      = 5
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+  host                   = module.eks-first.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks-first.cluster_certificate_authority_data)
   load_config_file       = false
 
   exec {
     api_version = "client.authentication.k8s.io/v1beta1"
     command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+    args        = ["eks", "get-token", "--cluster-name", module.eks-first.cluster_name]
   }
 }
 
@@ -49,9 +49,9 @@ data "aws_availability_zones" "available" {}
 
 ## Local Vars
 locals {
-  name = "eks-ha-dr-hasingle"
+  name = "eks-ha-multi"
 
-  region   = "us-west-2"
+  region   = "ap-southeast-1"
   vpc_cidr = "10.0.0.0/16"
   azs      = slice(data.aws_availability_zones.available.names, 0, 3)
 }
@@ -144,11 +144,11 @@ module "aurora_mysql" {
   master_password        = "adminadmin"
 }
 
-## EKS
-module "eks" {
+## EKS First
+module "eks-first" {
   source = "terraform-aws-modules/eks/aws"
 
-  cluster_name = format("%s-eks", local.name)
+  cluster_name = format("%s-eks-first", local.name)
 
   vpc_id                         = module.vpc.vpc_id
   subnet_ids                     = module.vpc.private_subnets
@@ -200,13 +200,13 @@ module "eks" {
   ]
 }
 
-## EKS / Karpenter
+## EKS First / Karpenter
 module "karpenter" {
   source = "terraform-aws-modules/eks/aws//modules/karpenter"
 
-  cluster_name = module.eks.cluster_name
+  cluster_name = module.eks-first.cluster_name
 
-  irsa_oidc_provider_arn       = module.eks.oidc_provider_arn
+  irsa_oidc_provider_arn       = module.eks-first.oidc_provider_arn
   iam_role_additional_policies = ["arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"]
 }
 
@@ -221,11 +221,11 @@ resource "helm_release" "karpenter" {
 
   set {
     name  = "settings.aws.clusterName"
-    value = module.eks.cluster_name
+    value = module.eks-first.cluster_name
   }
   set {
     name  = "settings.aws.clusterEndpoint"
-    value = module.eks.cluster_endpoint
+    value = module.eks-first.cluster_endpoint
   }
   set {
     name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
@@ -286,11 +286,11 @@ resource "kubectl_manifest" "karpenter_node_template" {
       name: default
     spec:
       subnetSelector:
-        karpenter.sh/discovery: ${module.eks.cluster_name}
+        karpenter.sh/discovery: ${module.eks-first.cluster_name}
       securityGroupSelector:
-        karpenter.sh/discovery: ${module.eks.cluster_name}
+        karpenter.sh/discovery: ${module.eks-first.cluster_name}
       tags:
-        karpenter.sh/discovery: ${module.eks.cluster_name}
+        karpenter.sh/discovery: ${module.eks-first.cluster_name}
   YAML
 
   depends_on = [
@@ -298,7 +298,7 @@ resource "kubectl_manifest" "karpenter_node_template" {
   ]
 }
 
-## EKS / Load Balancer Controller
+## EKS First / Load Balancer Controller
 module "eks_load_balancer_controller_irsa_role" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
@@ -307,7 +307,7 @@ module "eks_load_balancer_controller_irsa_role" {
 
   oidc_providers = {
     main = {
-      provider_arn               = module.eks.oidc_provider_arn
+      provider_arn               = module.eks-first.oidc_provider_arn
       namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
     }
   }
@@ -321,7 +321,7 @@ resource "helm_release" "aws-load-balancer-controller" {
  
   set {
     name  = "clusterName"
-    value = module.eks.cluster_name
+    value = module.eks-first.cluster_name
   }
   set {
     name  = "serviceAccount.name"
@@ -337,7 +337,7 @@ resource "helm_release" "aws-load-balancer-controller" {
   }
 }
 
-## EKS / External DNS
+## EKS First / External DNS
 module "eks_external_dns_irsa_role" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
@@ -346,7 +346,7 @@ module "eks_external_dns_irsa_role" {
 
   oidc_providers = {
     main = {
-      provider_arn               = module.eks.oidc_provider_arn
+      provider_arn               = module.eks-first.oidc_provider_arn
       namespace_service_accounts = ["kube-system:external-dns"]
     }
   }
@@ -384,7 +384,7 @@ resource "helm_release" "external_dns" {
   }
 }
 
-## EKS / EFS CSI
+## EKS First / EFS CSI
 module "eks_efs_csi_irsa_role" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
@@ -393,7 +393,7 @@ module "eks_efs_csi_irsa_role" {
 
   oidc_providers = {
     main = {
-      provider_arn               = module.eks.oidc_provider_arn
+      provider_arn               = module.eks-first.oidc_provider_arn
       namespace_service_accounts = ["kube-system:efs-csi-controller-sa"]
     }
   }
