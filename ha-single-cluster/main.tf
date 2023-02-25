@@ -49,9 +49,9 @@ data "aws_availability_zones" "available" {}
 
 ## Local Vars
 locals {
-  name = "eks-ha-dr-hasingle"
+  name = "eks-ha-single"
 
-  region   = "us-west-2"
+  region   = "ap-northeast-1"
   vpc_cidr = "10.0.0.0/16"
   azs      = slice(data.aws_availability_zones.available.names, 0, 3)
 }
@@ -211,7 +211,7 @@ module "karpenter" {
 }
 
 resource "helm_release" "karpenter" {
-  namespace  = "karpenter"
+  namespace        = "karpenter"
   create_namespace = true
 
   name       = "karpenter"
@@ -300,7 +300,7 @@ resource "kubectl_manifest" "karpenter_node_template" {
 
 ## EKS / Load Balancer Controller
 module "eks_load_balancer_controller_irsa_role" {
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
   role_name                              = format("eks-aws-load-balancer-controller-%s", local.name)
   attach_load_balancer_controller_policy = true
@@ -313,7 +313,7 @@ module "eks_load_balancer_controller_irsa_role" {
   }
 }
 
-resource "helm_release" "aws-load-balancer-controller" {
+resource "helm_release" "aws_load_balancer_controller" {
   namespace  = "kube-system"
   name       = "aws-load-balancer-controller"
   chart      = "aws-load-balancer-controller"
@@ -339,7 +339,7 @@ resource "helm_release" "aws-load-balancer-controller" {
 
 ## EKS / External DNS
 module "eks_external_dns_irsa_role" {
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
   role_name                  = format("eks-external-dns-%s", local.name)
   attach_external_dns_policy = true
@@ -386,7 +386,7 @@ resource "helm_release" "external_dns" {
 
 ## EKS / EFS CSI
 module "eks_efs_csi_irsa_role" {
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
   role_name             = format("eks-efs-csi-%s", local.name)
   attach_efs_csi_policy = true
@@ -419,7 +419,7 @@ resource "helm_release" "aws_efs_csi_driver" {
   }
 }
 
-resource "kubectl_manifest" "efs-pv" {
+resource "kubectl_manifest" "efs_pv" {
   yaml_body = <<-YAML
     apiVersion: v1
     kind: PersistentVolume
@@ -443,7 +443,7 @@ resource "kubectl_manifest" "efs-pv" {
   ]
 }
 
-resource "kubectl_manifest" "efs-pvc" {
+resource "kubectl_manifest" "efs_pvc" {
   yaml_body = <<-YAML
     apiVersion: v1
     kind: PersistentVolumeClaim
@@ -463,7 +463,7 @@ resource "kubectl_manifest" "efs-pvc" {
   ]
 }
 
-resource "kubectl_manifest" "efs-sc" {
+resource "kubectl_manifest" "efs_sc" {
   yaml_body = <<-YAML
     apiVersion: storage.k8s.io/v1
     kind: StorageClass
