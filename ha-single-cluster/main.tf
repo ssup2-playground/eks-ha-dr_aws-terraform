@@ -52,8 +52,8 @@ locals {
   name = "eks-ha-single"
 
   region   = "ap-northeast-1"
-  vpc_cidr = "10.0.0.0/16"
   azs      = slice(data.aws_availability_zones.available.names, 0, 3)
+  vpc_cidr = "10.0.0.0/16"
 }
 
 ## Zones
@@ -73,7 +73,7 @@ module "zones" {
 
 ## VPC
 module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
+  source = "terraform-aws-modules/vpc/aws"
 
   name = format("%s-vpc", local.name)
 
@@ -125,7 +125,7 @@ module "aurora_mysql" {
   name = format("%s-aurora", local.name)
 
   engine              = "aurora-mysql"
-  skip_final_snapshot = false
+  skip_final_snapshot = true
 
   instance_class = "db.r5.large"
   instances = { 

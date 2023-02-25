@@ -1,6 +1,14 @@
 ## Provider
 provider "aws" {
-  region = local.region
+  alias = "one"
+
+  region = local.one_region
+}
+
+provider "aws" {
+  alias = "two"
+
+  region = local.two_region
 }
 
 provider "kubernetes" {
@@ -98,26 +106,46 @@ provider "kubectl" {
 }
 
 ## Data
-data "aws_availability_zones" "available" {}
+data "aws_availability_zones" "one_available" {
+  provider = aws.one
+}
+
+data "aws_availability_zones" "two_available" {
+  provider = aws.two
+}
+  
+data "aws_caller_identity" "current" {
+  provider = aws.one
+}
 
 ## Local Vars
 locals {
-  name = "eks-ha-multi"
+  name = "eks-dr-multi"
 
-  region   = "ap-southeast-1"
-  azs      = slice(data.aws_availability_zones.available.names, 0, 3)
-  vpc_cidr = "10.0.0.0/16"
+  one_region = "us-east-1"
+  two_region = "us-east-2"
+  one_azs    = slice(data.aws_availability_zones.one_available.names, 0, 3)
+  two_azs    = slice(data.aws_availability_zones.two_available.names, 0, 3)
+  vpc_cidr   = "10.0.0.0/16"
 }
 
 ## Zones
 module "zones" {
+  providers = {
+    aws = aws.one
+  }
   source = "terraform-aws-modules/route53/aws//modules/zones"
 
   zones = {
     format("%s.test", local.name) = {
       vpc = [
         {
-          vpc_id = module.vpc.vpc_id
+          vpc_id = module.one_vpc.vpc_id
+          vpc_region = local.one_region
+        },
+        {
+          vpc_id = module.two_vpc.vpc_id
+          vpc_region = local.two_region
         },
       ]
     }
@@ -125,16 +153,51 @@ module "zones" {
 }
 
 ## VPC
-module "vpc" {
+module "one_vpc" {
+  providers = {
+    aws = aws.one
+  }
   source = "terraform-aws-modules/vpc/aws"
 
-  name = format("%s-vpc", local.name)
+  name = format("%s-one-vpc", local.name)
 
   cidr             = local.vpc_cidr
-  azs              = local.azs
-  public_subnets   = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k)]
-  private_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 10)]
-  database_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 4, k + 10)]
+  azs              = local.one_azs
+  public_subnets   = [for k, v in local.one_azs : cidrsubnet(local.vpc_cidr, 8, k)]
+  private_subnets  = [for k, v in local.one_azs : cidrsubnet(local.vpc_cidr, 8, k + 10)]
+  database_subnets = [for k, v in local.one_azs : cidrsubnet(local.vpc_cidr, 4, k + 10)]
+
+  enable_nat_gateway   = true
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  manage_default_network_acl    = true
+  manage_default_route_table    = true
+  manage_default_security_group = true
+
+  public_subnet_tags = {
+    "kubernetes.io/role/elb" = 1 # for AWS Load Balancer Controller
+  }
+
+  private_subnet_tags = {
+    "kubernetes.io/role/internal-elb" = 1                            # for AWS Load Balancer Controller
+    "karpenter.sh/discovery"          = format("%s-eks", local.name) # for Karpenter
+  }
+}
+
+module "two_vpc" {
+  providers = {
+    aws = aws.two
+  }
+  source = "terraform-aws-modules/vpc/aws"
+
+  name = format("%s-two-vpc", local.name)
+
+  cidr             = local.vpc_cidr
+  azs              = local.two_azs
+  public_subnets   = [for k, v in local.two_azs : cidrsubnet(local.vpc_cidr, 8, k)]
+  private_subnets  = [for k, v in local.two_azs : cidrsubnet(local.vpc_cidr, 8, k + 10)]
+  database_subnets = [for k, v in local.two_azs : cidrsubnet(local.vpc_cidr, 4, k + 10)]
 
   enable_nat_gateway   = true
   enable_dns_hostnames = true
@@ -155,30 +218,93 @@ module "vpc" {
 }
 
 ## EFS
-module "efs" {
-  source = "terraform-aws-modules/efs/aws"
+resource "aws_efs_file_system" "one_efs" {
+  provider = aws.one
 
-  name = format("%s-efs", local.name)
+  encrypted = true
 
-  mount_targets = { for k, v in zipmap(local.azs, module.vpc.private_subnets) : k => { subnet_id = v } }
-
-  attach_policy         = false
-  security_group_vpc_id = module.vpc.vpc_id
-  security_group_rules  = {
-    vpc = {
-      cidr_blocks = module.vpc.private_subnets_cidr_blocks
-    }
+  tags = {
+    Name = format("%s-one-efs", local.name)
   }
 }
 
+resource "aws_security_group" "one_efs_sg" {
+  provider = aws.one
+
+  name   = format("%s-one-efs-sg", local.name)
+  vpc_id = module.one_vpc.vpc_id
+
+  ingress {
+    from_port   = 2049
+    to_port     = 2049
+    protocol    = "tcp"
+    cidr_blocks = module.one_vpc.private_subnets_cidr_blocks
+  }
+}
+
+resource "aws_efs_mount_target" "one_efs_mount_target" {
+  provider = aws.one
+  
+  count           = "${length(module.one_vpc.private_subnets)}"
+  subnet_id       = module.one_vpc.private_subnets[count.index]
+  file_system_id  = aws_efs_file_system.one_efs.id
+  security_groups = [aws_security_group.one_efs_sg.id]
+}
+
+resource "aws_efs_replication_configuration" "two_efs" {
+  provider = aws.one
+
+  source_file_system_id = aws_efs_file_system.one_efs.id
+
+  destination {
+    region = local.two_region
+  }
+}
+
+resource "aws_security_group" "two_efs_sg" {
+  provider = aws.two
+
+  name   = format("%s-two-efs-sg", local.name)
+  vpc_id = module.two_vpc.vpc_id
+
+  ingress {
+    from_port   = 2049
+    to_port     = 2049
+    protocol    = "tcp"
+    cidr_blocks = module.two_vpc.private_subnets_cidr_blocks
+  }
+}
+
+resource "aws_efs_mount_target" "two_efs_mount_target" {
+  provider = aws.two
+  
+  count           = "${length(module.two_vpc.private_subnets)}"
+  subnet_id       = module.two_vpc.private_subnets[count.index]
+  file_system_id  = aws_efs_replication_configuration.two_efs.destination[0].file_system_id
+  security_groups = [aws_security_group.two_efs_sg.id]
+}
+
 ## Aurora
-module "aurora_mysql" {
+resource "aws_rds_global_cluster" "global_aurora_mysql" {
+  provider = aws.one
+
+  global_cluster_identifier = format("%s-global-aurora", local.name)
+  engine                    = "aurora-mysql"
+  storage_encrypted         = true
+}
+
+module "one_aurora_mysql" {
+  providers = {
+    aws = aws.one
+  }
   source = "terraform-aws-modules/rds-aurora/aws"
 
-  name = format("%s-aurora", local.name)
+  name = format("%s-one-aurora", local.name)
 
-  engine              = "aurora-mysql"
-  skip_final_snapshot = true
+  engine                    = aws_rds_global_cluster.global_aurora_mysql.engine
+  global_cluster_identifier = aws_rds_global_cluster.global_aurora_mysql.id
+  kms_key_id                = aws_kms_key.one_rds.arn
+  skip_final_snapshot       = true
 
   instance_class = "db.r5.large"
   instances = { 
@@ -186,28 +312,113 @@ module "aurora_mysql" {
     two = {}
   }
 
-  vpc_id                 = module.vpc.vpc_id
+  vpc_id                 = module.one_vpc.vpc_id
   create_security_group  = true
-  allowed_cidr_blocks    = module.vpc.private_subnets_cidr_blocks
+  allowed_cidr_blocks    = module.one_vpc.private_subnets_cidr_blocks
   create_db_subnet_group = false
-  db_subnet_group_name   = module.vpc.database_subnet_group_name
+  db_subnet_group_name   = module.one_vpc.database_subnet_group_name
 
   create_random_password = false
   master_username        = "admin"
   master_password        = "adminadmin"
 }
 
+module "two_aurora_mysql" {
+  providers = {
+    aws = aws.two
+  }
+  source = "terraform-aws-modules/rds-aurora/aws"
+
+  name = format("%s-two-aurora", local.name)
+
+  engine                    = aws_rds_global_cluster.global_aurora_mysql.engine
+  global_cluster_identifier = aws_rds_global_cluster.global_aurora_mysql.id
+  kms_key_id                = aws_kms_key.two_rds.arn
+  is_primary_cluster        = false
+  skip_final_snapshot       = true
+
+  instance_class = "db.r5.large"
+  instances = { 
+    one = {}
+    two = {}
+  }
+
+  vpc_id                 = module.two_vpc.vpc_id
+  create_security_group  = true
+  allowed_cidr_blocks    = module.two_vpc.private_subnets_cidr_blocks
+  create_db_subnet_group = false
+  db_subnet_group_name   = module.two_vpc.database_subnet_group_name
+}
+
+
+data "aws_iam_policy_document" "kms_rds" {
+  provider = aws.one
+
+  statement {
+    sid       = "Enable IAM User Permissions"
+    actions   = ["kms:*"]
+    resources = ["*"]
+
+    principals {
+      type = "AWS"
+      identifiers = [
+        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root",
+        data.aws_caller_identity.current.arn,
+      ]
+    }
+  }
+
+  statement {
+    sid = "Allow use of the key"
+    actions = [
+      "kms:Encrypt",
+      "kms:Decrypt",
+      "kms:ReEncrypt*",
+      "kms:GenerateDataKey*",
+      "kms:DescribeKey"
+    ]
+    resources = ["*"]
+
+    principals {
+      type = "Service"
+      identifiers = [
+        "monitoring.rds.amazonaws.com",
+        "rds.amazonaws.com",
+      ]
+    }
+  }
+}
+
+resource "aws_kms_key" "one_rds" {
+  provider = aws.one
+
+  policy = data.aws_iam_policy_document.kms_rds.json
+  tags = {
+    Name = format("%s-one-rds", local.name)
+  }
+}
+
+resource "aws_kms_key" "two_rds" {
+  provider = aws.two
+
+  policy = data.aws_iam_policy_document.kms_rds.json
+  tags = {
+    Name = format("%s-one-rds", local.name)
+  }
+}
+
 ## EKS One
 module "one_eks" {
   providers = {
+    aws = aws.one
     kubernetes = kubernetes.one
   }
   source = "terraform-aws-modules/eks/aws"
 
   cluster_name = format("%s-one-eks", local.name)
 
-  vpc_id                         = module.vpc.vpc_id
-  subnet_ids                     = module.vpc.private_subnets
+  vpc_id                         = module.one_vpc.vpc_id
+  subnet_ids                     = module.one_vpc.private_subnets
   cluster_endpoint_public_access = true
 
   eks_managed_node_groups = {
@@ -259,6 +470,7 @@ module "one_eks" {
 ## EKS One / Karpenter
 module "one_karpenter" {
   providers = {
+    aws = aws.one
     kubernetes = kubernetes.one
   }
   source = "terraform-aws-modules/eks/aws//modules/karpenter"
@@ -316,9 +528,6 @@ resource "kubectl_manifest" "one_karpenter_provisioner" {
       name: default
     spec:
       requirements:
-        - key: "topology.kubernetes.io/zone"
-          operator: In
-          values: ["ap-southeast-1a"]
         - key: karpenter.sh/capacity-type
           operator: In
           values: ["on-demand"]
@@ -368,6 +577,9 @@ resource "kubectl_manifest" "one_karpenter_node_template" {
 
 ## EKS One / Load Balancer Controller
 module "one_eks_load_balancer_controller_irsa_role" {
+  providers = {
+    aws = aws.one
+  }
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
   role_name                              = format("%s-one-eks-aws-load-balancer-controller", local.name)
@@ -409,6 +621,9 @@ resource "helm_release" "one_aws_load_balancer_controller" {
 
 ## EKS One / External DNS
 module "one_eks_external_dns_irsa_role" {
+  providers = {
+    aws = aws.one
+  }
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
   role_name                  = format("%s-one-eks-external-dns", local.name)
@@ -458,6 +673,9 @@ resource "helm_release" "one_external_dns" {
 
 ## EKS One / EFS CSI
 module "one_eks_efs_csi_irsa_role" {
+  providers = {
+    aws = aws.one
+  }
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
   role_name             = format("%s-one-eks-efs-csi", local.name)
@@ -511,7 +729,7 @@ resource "kubectl_manifest" "one_efs_pv" {
       storageClassName: efs-sc
       csi:
         driver: efs.csi.aws.com
-        volumeHandle: ${module.efs.id}
+        volumeHandle: ${aws_efs_file_system.one_efs.id}
   YAML
 
   depends_on = [
@@ -560,14 +778,15 @@ resource "kubectl_manifest" "one_efs_sc" {
 ## EKS Two
 module "two_eks" {
   providers = {
+    aws = aws.two
     kubernetes = kubernetes.two
   }
   source = "terraform-aws-modules/eks/aws"
 
   cluster_name = format("%s-two-eks", local.name)
 
-  vpc_id                         = module.vpc.vpc_id
-  subnet_ids                     = module.vpc.private_subnets
+  vpc_id                         = module.two_vpc.vpc_id
+  subnet_ids                     = module.two_vpc.private_subnets
   cluster_endpoint_public_access = true
 
   eks_managed_node_groups = {
@@ -619,6 +838,7 @@ module "two_eks" {
 ## EKS Two / Karpenter
 module "two_karpenter" {
   providers = {
+    aws = aws.two
     kubernetes = kubernetes.two
   }
   source = "terraform-aws-modules/eks/aws//modules/karpenter"
@@ -664,6 +884,10 @@ resource "helm_release" "two_karpenter" {
     name  = "nodeSelector.type"
     value = "control"
   }
+  set {
+    name  = "replicas"
+    value = "0"
+  }
 }
 
 resource "kubectl_manifest" "two_karpenter_provisioner" {
@@ -676,9 +900,6 @@ resource "kubectl_manifest" "two_karpenter_provisioner" {
       name: default
     spec:
       requirements:
-        - key: "topology.kubernetes.io/zone"
-          operator: In
-          values: ["ap-southeast-1b"]
         - key: karpenter.sh/capacity-type
           operator: In
           values: ["on-demand"]
@@ -728,6 +949,9 @@ resource "kubectl_manifest" "two_karpenter_node_template" {
 
 ## EKS Two / Load Balancer Controller
 module "two_eks_load_balancer_controller_irsa_role" {
+  providers = {
+    aws = aws.two
+  }
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
   role_name                              = format("eks-aws-load-balancer-controller-%s", local.name)
@@ -769,6 +993,9 @@ resource "helm_release" "two_aws_load_balancer_controller" {
 
 ## EKS Two / External DNS
 module "two_eks_external_dns_irsa_role" {
+  providers = {
+    aws = aws.two
+  }
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
   role_name                  = format("eks-external-dns-%s", local.name)
@@ -818,6 +1045,9 @@ resource "helm_release" "two_external_dns" {
 
 ## EKS Two / EFS CSI
 module "two_eks_efs_csi_irsa_role" {
+  providers = {
+    aws = aws.two
+  }
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
   role_name             = format("eks-efs-csi-%s", local.name)
@@ -871,7 +1101,7 @@ resource "kubectl_manifest" "two_efs_pv" {
       storageClassName: efs-sc
       csi:
         driver: efs.csi.aws.com
-        volumeHandle: ${module.efs.id}
+        volumeHandle: ${aws_efs_replication_configuration.two_efs.destination[0].file_system_id}
   YAML
 
   depends_on = [
