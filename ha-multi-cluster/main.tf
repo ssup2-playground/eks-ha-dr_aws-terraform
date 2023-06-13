@@ -224,6 +224,14 @@ module "one_eks" {
       labels = {
         type = "control"
       }
+
+      taints = {
+        dedicated = {
+          key    = "type"
+          value  = "control"
+          effect = "NO_SCHEDULE"
+        }
+      }
     }
   }
 
@@ -303,6 +311,22 @@ resource "helm_release" "one_karpenter" {
   set {
     name  = "nodeSelector.type"
     value = "control"
+  }
+  set {
+    name  = "tolerations[0].key"
+    value = "type"
+  }
+  set {
+    name  = "tolerations[0].value"
+    value = "control"
+  }
+  set {
+    name  = "tolerations[0].operator"
+    value = "Equal"
+  }
+  set {
+    name  = "tolerations[0].effect"
+    value = "NoSchedule"
   }
 }
 
@@ -405,6 +429,22 @@ resource "helm_release" "one_aws_load_balancer_controller" {
     name  = "nodeSelector.type"
     value = "control"
   }
+  set {
+    name  = "tolerations[0].key"
+    value = "type"
+  }
+  set {
+    name  = "tolerations[0].value"
+    value = "control"
+  }
+  set {
+    name  = "tolerations[0].operator"
+    value = "Equal"
+  }
+  set {
+    name  = "tolerations[0].effect"
+    value = "NoSchedule"
+  }
 }
 
 ## EKS One / External DNS
@@ -445,6 +485,22 @@ resource "helm_release" "one_external_dns" {
   set {
     name  = "nodeSelector.type"
     value = "control"
+  }
+  set {
+    name  = "tolerations[0].key"
+    value = "type"
+  }
+  set {
+    name  = "tolerations[0].value"
+    value = "control"
+  }
+  set {
+    name  = "tolerations[0].operator"
+    value = "Equal"
+  }
+  set {
+    name  = "tolerations[0].effect"
+    value = "NoSchedule"
   }
   set {
     name  = "replicaCount"
@@ -490,6 +546,22 @@ resource "helm_release" "one_aws_efs_csi_driver" {
   set {
     name  = "controller.nodeSelector.type"
     value = "control"
+  }
+  set {
+    name  = "controller.tolerations[0].key"
+    value = "type"
+  }
+  set {
+    name  = "controller.tolerations[0].value"
+    value = "control"
+  }
+  set {
+    name  = "controller.tolerations[0].operator"
+    value = "Equal"
+  }
+  set {
+    name  = "controller.tolerations[0].effect"
+    value = "NoSchedule"
   }
 }
 
@@ -584,6 +656,14 @@ module "two_eks" {
       labels = {
         type = "control"
       }
+
+      taints = {
+        dedicated = {
+          key    = "type"
+          value  = "control"
+          effect = "NO_SCHEDULE"
+        }
+      }
     }
   }
 
@@ -663,6 +743,22 @@ resource "helm_release" "two_karpenter" {
   set {
     name  = "nodeSelector.type"
     value = "control"
+  }
+  set {
+    name  = "tolerations[0].key"
+    value = "type"
+  }
+  set {
+    name  = "tolerations[0].value"
+    value = "control"
+  }
+  set {
+    name  = "tolerations[0].operator"
+    value = "Equal"
+  }
+  set {
+    name  = "tolerations[0].effect"
+    value = "NoSchedule"
   }
 }
 
@@ -765,6 +861,22 @@ resource "helm_release" "two_aws_load_balancer_controller" {
     name  = "nodeSelector.type"
     value = "control"
   }
+  set {
+    name  = "tolerations[0].key"
+    value = "type"
+  }
+  set {
+    name  = "tolerations[0].value"
+    value = "control"
+  }
+  set {
+    name  = "tolerations[0].operator"
+    value = "Equal"
+  }
+  set {
+    name  = "tolerations[0].effect"
+    value = "NoSchedule"
+  }
 }
 
 ## EKS Two / External DNS
@@ -805,6 +917,22 @@ resource "helm_release" "two_external_dns" {
   set {
     name  = "nodeSelector.type"
     value = "control"
+  }
+  set {
+    name  = "tolerations[0].key"
+    value = "type"
+  }
+  set {
+    name  = "tolerations[0].value"
+    value = "control"
+  }
+  set {
+    name  = "tolerations[0].operator"
+    value = "Equal"
+  }
+  set {
+    name  = "tolerations[0].effect"
+    value = "NoSchedule"
   }
   set {
     name  = "replicaCount"
@@ -850,6 +978,22 @@ resource "helm_release" "two_aws_efs_csi_driver" {
   set {
     name  = "controller.nodeSelector.type"
     value = "control"
+  }
+  set {
+    name  = "controller.tolerations[0].key"
+    value = "type"
+  }
+  set {
+    name  = "controller.tolerations[0].value"
+    value = "control"
+  }
+  set {
+    name  = "controller.tolerations[0].operator"
+    value = "Equal"
+  }
+  set {
+    name  = "controller.tolerations[0].effect"
+    value = "NoSchedule"
   }
 }
 
