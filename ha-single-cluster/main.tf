@@ -134,14 +134,19 @@ module "aurora_mysql" {
   }
 
   vpc_id                 = module.vpc.vpc_id
-  create_security_group  = true
-  allowed_cidr_blocks    = module.vpc.private_subnets_cidr_blocks
   create_db_subnet_group = false
   db_subnet_group_name   = module.vpc.database_subnet_group_name
 
-  create_random_password = false
-  master_username        = "admin"
-  master_password        = "adminadmin"
+  create_security_group = true
+  security_group_rules = {
+    ingress = {
+      cidr_blocks = module.vpc.private_subnets_cidr_blocks
+    }
+  }
+
+  manage_master_user_password = false
+  master_username             = "admin"
+  master_password             = "adminadmin"
 }
 
 ## EKS
@@ -206,6 +211,41 @@ module "eks" {
       ]
     },
   ]
+}
+
+## EKS / Addons
+module "eks_blueprints_addons" {
+  source  = "aws-ia/eks-blueprints-addons/aws"
+
+  cluster_name      = module.eks.cluster_name
+  cluster_endpoint  = module.eks.cluster_endpoint
+  cluster_version   = module.eks.cluster_version
+  oidc_provider_arn = module.eks.oidc_provider_arn
+
+  eks_addons = {
+    coredns = {
+      most_recent = true
+      configuration_values = jsonencode({
+        nodeSelector: {
+          type: "control"
+        }
+        tolerations: [
+          {
+            key: "type",
+            value: "control",
+            operator: "Equal",
+            effect: "NoSchedule"
+          }
+        ]
+      })
+    }
+    vpc-cni = {
+      most_recent = true
+    }
+    kube-proxy = {
+      most_recent = true
+    }
+  }
 }
 
 ## EKS / Karpenter

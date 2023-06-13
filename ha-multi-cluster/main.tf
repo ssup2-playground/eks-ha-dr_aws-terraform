@@ -187,14 +187,19 @@ module "aurora_mysql" {
   }
 
   vpc_id                 = module.vpc.vpc_id
-  create_security_group  = true
-  allowed_cidr_blocks    = module.vpc.private_subnets_cidr_blocks
   create_db_subnet_group = false
   db_subnet_group_name   = module.vpc.database_subnet_group_name
 
-  create_random_password = false
-  master_username        = "admin"
-  master_password        = "adminadmin"
+  create_security_group = true
+  security_group_rules = {
+    ingress = {
+      cidr_blocks = module.vpc.private_subnets_cidr_blocks
+    }
+  }
+
+  manage_master_user_password = false
+  master_username             = "admin"
+  master_password             = "adminadmin"
 }
 
 ## EKS One
@@ -262,6 +267,41 @@ module "one_eks" {
       ]
     },
   ]
+}
+
+## EKS One / Addons
+module "one_eks_blueprints_addons" {
+  source  = "aws-ia/eks-blueprints-addons/aws"
+
+  cluster_name      = module.one_eks.cluster_name
+  cluster_endpoint  = module.one_eks.cluster_endpoint
+  cluster_version   = module.one_eks.cluster_version
+  oidc_provider_arn = module.one_eks.oidc_provider_arn
+
+  eks_addons = {
+    coredns = {
+      most_recent = true
+      configuration_values = jsonencode({
+        nodeSelector: {
+          type: "control"
+        }
+        tolerations: [
+          {
+            key: "type",
+            value: "control",
+            operator: "Equal",
+            effect: "NoSchedule"
+          }
+        ]
+      })
+    }
+    vpc-cni = {
+      most_recent = true
+    }
+    kube-proxy = {
+      most_recent = true
+    }
+  }
 }
 
 ## EKS One / Karpenter
@@ -694,6 +734,41 @@ module "two_eks" {
       ]
     },
   ]
+}
+
+## EKS Two / Addons
+module "two_eks_blueprints_addons" {
+  source  = "aws-ia/eks-blueprints-addons/aws"
+
+  cluster_name      = module.two_eks.cluster_name
+  cluster_endpoint  = module.two_eks.cluster_endpoint
+  cluster_version   = module.two_eks.cluster_version
+  oidc_provider_arn = module.two_eks.oidc_provider_arn
+
+  eks_addons = {
+    coredns = {
+      most_recent = true
+      configuration_values = jsonencode({
+        nodeSelector: {
+          type: "control"
+        }
+        tolerations: [
+          {
+            key: "type",
+            value: "control",
+            operator: "Equal",
+            effect: "NoSchedule"
+          }
+        ]
+      })
+    }
+    vpc-cni = {
+      most_recent = true
+    }
+    kube-proxy = {
+      most_recent = true
+    }
+  }
 }
 
 ## EKS Two / Karpenter
